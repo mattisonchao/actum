@@ -5,11 +5,11 @@
 ```text
 terminal window
 ├── native shell                         any shell command or AI agent
-└── actum sidebar                        read and update task state
+└── actum                                read and update task state
 
 AI client ── MCP over stdio ──┐
 actum CLI ────────────────────┼── shared Rust operations ── PostgreSQL
-actum sidebar ────────────────┘
+actum ────────────────────────┘
 ```
 
 Actum does not capture shell input, proxy commands, or implement terminal emulation. A terminal-native split, Zellij, or tmux composes the native shell and Actum sidebar.

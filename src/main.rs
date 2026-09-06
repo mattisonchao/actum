@@ -18,7 +18,7 @@ struct Cli {
     database_url: String,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -112,15 +112,19 @@ async fn main() -> Result<()> {
     store.migrate().await?;
 
     match cli.command {
-        Command::Migrate => println!("Database is ready."),
-        Command::Seed => {
+        None => {
+            let root = std::env::var("ACTUM_ROOT").unwrap_or_else(|_| "/projects".to_owned());
+            tui::run(store, root).await?;
+        }
+        Some(Command::Migrate) => println!("Database is ready."),
+        Some(Command::Seed) => {
             store.seed().await?;
             println!("Seeded the Actum workspace.");
         }
-        Command::List { directory, all } => {
+        Some(Command::List { directory, all }) => {
             print_snapshot(&store.snapshot(&directory, all).await?);
         }
-        Command::Directory { command } => match command {
+        Some(Command::Directory { command }) => match command {
             DirectoryCommand::Add { path, priority } => {
                 let id = store
                     .ensure_directory(&path, parse_priority(priority.as_deref())?)
@@ -128,7 +132,7 @@ async fn main() -> Result<()> {
                 println!("Created or updated directory #{id}: {path}");
             }
         },
-        Command::Group { command } => match command {
+        Some(Command::Group { command }) => match command {
             GroupCommand::Add {
                 directory,
                 name,
@@ -151,7 +155,7 @@ async fn main() -> Result<()> {
                 print_links(&group.links, "  ");
             }
         },
-        Command::Task { command } => match command {
+        Some(Command::Task { command }) => match command {
             TaskCommand::Add {
                 directory,
                 title,
@@ -191,8 +195,8 @@ async fn main() -> Result<()> {
                 print_links(&task.links, "  ");
             }
         },
-        Command::Sidebar { root } => tui::run(store, root).await?,
-        Command::Mcp => mcp::run(store).await?,
+        Some(Command::Sidebar { root }) => tui::run(store, root).await?,
+        Some(Command::Mcp) => mcp::run(store).await?,
     }
     Ok(())
 }

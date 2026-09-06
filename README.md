@@ -2,7 +2,7 @@
 
 Actum is a terminal-first task manager. PostgreSQL stores a directory → group → task hierarchy, a small TUI renders the live database in a terminal sidebar, and an MCP server gives AI agents a typed interface to the same operations.
 
-Actum does not emulate a terminal. Keep your normal shell on the left and run `actum sidebar` in a terminal or multiplexer split on the right.
+Actum does not emulate a terminal. Keep your normal shell on the left and run `actum` in a terminal or multiplexer split on the right.
 
 ## First run
 
@@ -24,7 +24,7 @@ The database listens only on `127.0.0.1:55432`. Its data persists in the `actum-
 Create a right-side split in your terminal, then run:
 
 ```bash
-cargo run -- sidebar --root /projects
+actum
 ```
 
 The left pane remains a native shell and can run any command or AI agent.
