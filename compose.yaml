@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: actum-postgres
+    environment:
+      POSTGRES_DB: actum
+      POSTGRES_USER: actum
+      POSTGRES_PASSWORD: actum
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U actum -d actum"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - actum-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  actum-postgres-data:

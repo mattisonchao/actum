@@ -1,0 +1,45 @@
+# Architecture
+
+## Process model
+
+```text
+terminal window
+├── native shell                         any shell command or AI agent
+└── actum sidebar                        read and update task state
+
+AI client ── MCP over stdio ──┐
+actum CLI ────────────────────┼── shared Rust operations ── PostgreSQL
+actum sidebar ────────────────┘
+```
+
+Actum does not capture shell input, proxy commands, or implement terminal emulation. A terminal-native split, Zellij, or tmux composes the native shell and Actum sidebar.
+
+## Hierarchy
+
+```text
+directory/
+├── group
+│   ├── task
+│   └── task
+└── ungrouped task
+```
+
+- Directories may nest.
+- Groups belong to exactly one directory.
+- Tasks belong to one directory and optionally one group in that directory.
+- Directories, groups, and tasks can set `P1`, `P2`, or `P3`.
+- A missing priority inherits from the closest ancestor.
+- Completed tasks are hidden by default.
+- Groups and tasks retain raw external links.
+
+## Interfaces
+
+The CLI, TUI, and MCP handlers call the same `Store` application operations. MCP exposes narrow task-management tools and never unrestricted SQL.
+
+The MCP server publishes behavioral instructions with its server metadata and detailed tool schemas. Important invariants remain enforced by PostgreSQL constraints and the shared application layer rather than relying on agent instructions.
+
+## First-version tradeoffs
+
+- The sidebar polls once per second for cross-process changes. PostgreSQL `LISTEN/NOTIFY` can replace polling without changing the UI.
+- The code is a single Rust crate. It can split into core, PostgreSQL, CLI/TUI, and MCP crates when those boundaries need independent releases.
+- PostgreSQL runs locally in Docker and binds only to loopback. The connection URL can later target a cloud database without changing commands.
