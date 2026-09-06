@@ -13,8 +13,8 @@ git clone https://github.com/mattisonchao/actum.git
 cd actum
 docker compose up -d --wait postgres
 cargo run -- migrate
-cargo run -- seed
-cargo run -- list /projects/oxia
+cargo run -- init
+cargo run -- list /projects
 ```
 
 The database listens only on `127.0.0.1:55432`. Its data persists in the `actum-postgres-data` Docker volume.
@@ -28,6 +28,8 @@ actum
 ```
 
 The left pane remains your native shell and can run any command or AI agent. The right pane reads the same PostgreSQL data used by the CLI and MCP server. Other terminal applications work too; use their normal split-pane action.
+
+Inside Actum, the top row shows directories on the left and the selected directory's task list on the right. The bottom row shows the selected task's unique ID, status, deadline, location, links, and comments or notes.
 
 Sidebar keys:
 
@@ -48,21 +50,22 @@ Completed tasks are hidden by default. The sidebar also refreshes once per secon
 cargo run -- list /projects/sql-workspace
 
 # Create hierarchy
-cargo run -- directory add /projects/example --priority P2
-cargo run -- group add /projects/example "Public preview" --priority P2
+cargo run -- directory add /projects/example --deadline 2030-06-30
+cargo run -- group add /projects/example "Public preview" --deadline 2030-06-15
 cargo run -- task add /projects/example "Deploy the cluster" \
-  --group "Public preview" --priority P1 \
+  --group "Public preview" --deadline 2030-06-01 \
   --link https://github.com/example/project/issues/1
 
 # Move and complete tasks by stable ID
 cargo run -- task move 1 /projects/example --group "Public preview"
+cargo run -- task deadline 1 2030-06-01
 cargo run -- task complete 1 --note "Verified in production"
 
 # Include completed tasks
 cargo run -- list /projects/example --all
 ```
 
-Priorities can be `P1`, `P2`, or `P3`. Missing task priority inherits from its group, then its directory.
+Deadlines use `YYYY-MM-DD`. A missing task deadline inherits from its group, then its directory; items without a deadline sort last.
 
 ## Connect an AI client with MCP
 
@@ -105,6 +108,7 @@ Restart or reload the AI client after adding the server. It can then discover th
 - `create_group`
 - `create_task`
 - `move_task`
+- `set_task_deadline`
 - `complete_task`
 - `delete_task` — permanently removes a task only when explicitly requested
 

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use chrono::NaiveDate;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
 use crate::model::{DirectoryView, GroupView, GroupWithTasks, Snapshot, TaskView};
@@ -12,8 +13,8 @@ pub struct Store {
 struct DirectoryRow {
     id: i64,
     name: String,
-    explicit_priority: Option<i16>,
-    effective_priority: i16,
+    explicit_deadline: Option<NaiveDate>,
+    effective_deadline: Option<NaiveDate>,
 }
 
 impl Store {
@@ -65,7 +66,7 @@ impl Store {
         Ok(parent_id)
     }
 
-    pub async fn ensure_directory(&self, path: &str, priority: Option<i16>) -> Result<i64> {
+    pub async fn ensure_directory(&self, path: &str, deadline: Option<NaiveDate>) -> Result<i64> {
         let components = path_components(path);
         if components.is_empty() {
             bail!("the virtual root directory cannot be created or updated");
@@ -86,12 +87,12 @@ impl Store {
                 Some(id) => id,
                 None => {
                     sqlx::query_scalar::<_, i64>(
-                        "INSERT INTO directories (parent_id, name, priority) VALUES ($1, $2, $3) RETURNING id",
+                        "INSERT INTO directories (parent_id, name, deadline) VALUES ($1, $2, $3) RETURNING id",
                     )
                     .bind(parent_id)
                     .bind(component)
                     .bind(if index + 1 == components.len() {
-                        priority
+                        deadline
                     } else {
                         None
                     })
@@ -103,9 +104,9 @@ impl Store {
         }
 
         let directory_id = parent_id.expect("non-empty directory path");
-        if let Some(priority) = priority {
-            sqlx::query("UPDATE directories SET priority = $1 WHERE id = $2")
-                .bind(priority)
+        if let Some(deadline) = deadline {
+            sqlx::query("UPDATE directories SET deadline = $1 WHERE id = $2")
+                .bind(deadline)
                 .bind(directory_id)
                 .execute(&mut *transaction)
                 .await?;
@@ -119,23 +120,23 @@ impl Store {
         &self,
         directory_path: &str,
         name: &str,
-        priority: Option<i16>,
+        deadline: Option<NaiveDate>,
         links: &[String],
     ) -> Result<GroupView> {
         let directory_id = self.require_directory(directory_path).await?;
         let group_id = sqlx::query_scalar::<_, i64>(
             r#"
-            INSERT INTO task_groups (directory_id, name, priority, links)
+            INSERT INTO task_groups (directory_id, name, deadline, links)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (directory_id, name) DO UPDATE SET
-                priority = COALESCE(EXCLUDED.priority, task_groups.priority),
+                deadline = COALESCE(EXCLUDED.deadline, task_groups.deadline),
                 links = CASE WHEN cardinality(EXCLUDED.links) = 0 THEN task_groups.links ELSE EXCLUDED.links END
             RETURNING id
             "#,
         )
         .bind(directory_id)
         .bind(name)
-        .bind(priority)
+        .bind(deadline)
         .bind(links)
         .fetch_one(&self.pool)
         .await?;
@@ -148,7 +149,7 @@ impl Store {
         directory_path: &str,
         group_name: Option<&str>,
         title: &str,
-        priority: Option<i16>,
+        deadline: Option<NaiveDate>,
         links: &[String],
     ) -> Result<TaskView> {
         let directory_id = self.require_directory(directory_path).await?;
@@ -159,11 +160,11 @@ impl Store {
 
         let task_id = sqlx::query_scalar::<_, i64>(
             r#"
-            INSERT INTO tasks (directory_id, group_id, title, priority, links)
+            INSERT INTO tasks (directory_id, group_id, title, deadline, links)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (directory_id, title) DO UPDATE SET
                 group_id = EXCLUDED.group_id,
-                priority = COALESCE(EXCLUDED.priority, tasks.priority),
+                deadline = COALESCE(EXCLUDED.deadline, tasks.deadline),
                 links = CASE WHEN cardinality(EXCLUDED.links) = 0 THEN tasks.links ELSE EXCLUDED.links END
             RETURNING id
             "#,
@@ -171,7 +172,7 @@ impl Store {
         .bind(directory_id)
         .bind(group_id)
         .bind(title)
-        .bind(priority)
+        .bind(deadline)
         .bind(links)
         .fetch_one(&self.pool)
         .await?;
@@ -240,6 +241,22 @@ impl Store {
         self.task_by_id(task_id).await
     }
 
+    pub async fn set_task_deadline(&self, task_id: i64, deadline: NaiveDate) -> Result<TaskView> {
+        let updated = sqlx::query_scalar::<_, i64>(
+            "UPDATE tasks SET deadline = $2 WHERE id = $1 RETURNING id",
+        )
+        .bind(task_id)
+        .bind(deadline)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if updated.is_none() {
+            bail!("task #{task_id} does not exist");
+        }
+        self.notify("task").await?;
+        self.task_by_id(task_id).await
+    }
+
     pub async fn snapshot(&self, path: &str, include_completed: bool) -> Result<Snapshot> {
         let normalized_path = normalize_path(path);
         let directory_id = self.directory_id(&normalized_path).await?;
@@ -251,20 +268,18 @@ impl Store {
             r#"
             SELECT child.id,
                    child.name,
-                   child.priority AS explicit_priority,
-                   COALESCE(
-                     (WITH RECURSIVE ancestry AS (
-                        SELECT d.id, d.parent_id, d.priority, 0 AS depth
+                   child.deadline AS explicit_deadline,
+                   (WITH RECURSIVE ancestry AS (
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
                         FROM directories d WHERE d.id = child.id
                         UNION ALL
-                        SELECT parent.id, parent.parent_id, parent.priority, ancestry.depth + 1
+                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
-                      ) SELECT priority FROM ancestry WHERE priority IS NOT NULL ORDER BY depth LIMIT 1),
-                     3
-                   )::SMALLINT AS effective_priority
+                      ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1
+                   ) AS effective_deadline
             FROM directories child
             WHERE child.parent_id IS NOT DISTINCT FROM $1
-            ORDER BY effective_priority, child.name
+            ORDER BY effective_deadline NULLS LAST, child.name
             "#,
         )
         .bind(directory_id)
@@ -277,8 +292,8 @@ impl Store {
                 id: row.id,
                 path: join_path(&normalized_path, &row.name),
                 name: row.name,
-                explicit_priority: row.explicit_priority,
-                effective_priority: row.effective_priority,
+                explicit_deadline: row.explicit_deadline,
+                effective_deadline: row.effective_deadline,
             })
             .collect();
 
@@ -321,160 +336,8 @@ impl Store {
         })
     }
 
-    pub async fn seed(&self) -> Result<()> {
-        self.ensure_directory("/projects/oxia", Some(1)).await?;
-        self.ensure_directory("/projects/release-readiness", Some(1))
-            .await?;
-        self.ensure_directory("/projects/sql-workspace", Some(2))
-            .await?;
-        self.ensure_directory("/projects/dss-hackathon", Some(3))
-            .await?;
-        self.ensure_directory("/projects/integrations", Some(2))
-            .await?;
-        self.ensure_directory("/projects/docs", Some(3)).await?;
-
-        self.create_group("/projects/oxia", "Subscriptions", Some(1), &[])
-            .await?;
-        self.create_task(
-            "/projects/oxia",
-            Some("Subscriptions"),
-            "Renew long-lived Oxia Java subscriptions",
-            Some(1),
-            &["https://github.com/oxia-db/oxia-client-java/pull/372".into()],
-        )
-        .await?;
-
-        self.create_group(
-            "/projects/oxia",
-            "Oxia 0.16.9 production verification",
-            Some(2),
-            &["https://github.com/oxia-db/oxia/pull/1286".into()],
-        )
-        .await?;
-        self.create_task(
-            "/projects/oxia",
-            Some("Oxia 0.16.9 production verification"),
-            "Roll out Oxia 0.16.9 and verify the APIKey backlog/readiness fix for Aegis Financial",
-            Some(2),
-            &[
-                "https://github.com/streamnative/eng-support-tickets/issues/4925".into(),
-                "https://github.com/oxia-db/oxia/pull/1286".into(),
-            ],
-        )
-        .await?;
-        self.create_task(
-            "/projects/oxia",
-            Some("Oxia 0.16.9 production verification"),
-            "Verify the fix for slow OxiaNamespace creation at production scale",
-            Some(2),
-            &["https://github.com/oxia-db/oxia/pull/1286".into()],
-        )
-        .await?;
-
-        self.create_group(
-            "/projects/release-readiness",
-            "Pulsar staging",
-            Some(1),
-            &[],
-        )
-        .await?;
-        self.create_task(
-            "/projects/release-readiness",
-            Some("Pulsar staging"),
-            "Fix the unified-rbac plugin build failure in the Pulsar 5.0.0-M1-SNAPSHOT staging release",
-            Some(1),
-            &["https://github.com/streamnative/streamnative-ci/actions/runs/32701047955/job/98060742997".into()],
-        )
-        .await?;
-
-        self.create_group(
-            "/projects/sql-workspace",
-            "Public Preview",
-            Some(3),
-            &["https://github.com/streamnative/product-roadmap/issues/1901".into()],
-        )
-        .await?;
-        for (title, priority, link) in [
-            (
-                "Provision a SQL Workspace environment for Kundan in production",
-                2,
-                None,
-            ),
-            ("SQLWorkspace: support a customized image", 2, None),
-            (
-                "SQLWorkspace: automatically load the RisingWave license",
-                2,
-                Some("https://github.com/streamnative/sn-operator/pull/1399"),
-            ),
-            (
-                "Hot-reload native TLS certificates in SQL Gateway",
-                2,
-                Some("https://github.com/streamnative/sql-gateway/pull/45"),
-            ),
-            (
-                "Next SQLWorkspace epic: public preview and native Lakestream catalog",
-                3,
-                Some("https://github.com/streamnative/snip/pull/132"),
-            ),
-            (
-                "Support SQL workspace and catalog creation in Cloud CLI",
-                3,
-                Some("https://github.com/streamnative/cloud-cli/pull/267"),
-            ),
-        ] {
-            let links = link.into_iter().map(String::from).collect::<Vec<_>>();
-            self.create_task(
-                "/projects/sql-workspace",
-                Some("Public Preview"),
-                title,
-                Some(priority),
-                &links,
-            )
-            .await?;
-        }
-        self.create_group(
-            "/projects/sql-workspace",
-            "Lakestream Catalog",
-            Some(3),
-            &["https://github.com/streamnative/product-roadmap/issues/1900".into()],
-        )
-        .await?;
-        self.create_task(
-            "/projects/sql-workspace",
-            None,
-            "Review SQL Workspace tracking sheet",
-            Some(2),
-            &["https://docs.google.com/spreadsheets/d/10upSTBaxPDnx4BrnZa_5k-N99R2XkZuetZZblknM4WY/edit?gid=0#gid=0".into()],
-        )
-        .await?;
-
-        self.create_group("/projects/dss-hackathon", "Launch", Some(3), &[])
-            .await?;
-        self.create_task(
-            "/projects/dss-hackathon",
-            Some("Launch"),
-            "Deploy a cluster for the DSS Hackathon",
-            Some(2),
-            &[],
-        )
-        .await?;
-
-        self.create_task(
-            "/projects/integrations",
-            None,
-            "Support Pulsar Schema Registry for RisingWave Avro sources",
-            Some(2),
-            &["https://github.com/risingwavelabs/risingwave/pull/26347".into()],
-        )
-        .await?;
-        self.create_task(
-            "/projects/docs",
-            None,
-            "Document the Kafka upstream-source syncing logic",
-            Some(3),
-            &[],
-        )
-        .await?;
+    pub async fn initialize(&self) -> Result<()> {
+        self.ensure_directory("/projects", None).await?;
         Ok(())
     }
 
@@ -496,18 +359,17 @@ impl Store {
     async fn group_by_id(&self, group_id: i64) -> Result<GroupView> {
         sqlx::query_as(
             r#"
-            SELECT g.id, g.name, g.priority AS explicit_priority,
+            SELECT g.id, g.name, g.deadline AS explicit_deadline,
                    COALESCE(
-                     g.priority,
+                     g.deadline,
                      (WITH RECURSIVE ancestry AS (
-                        SELECT d.id, d.parent_id, d.priority, 0 AS depth
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
                         FROM directories d WHERE d.id = g.directory_id
                         UNION ALL
-                        SELECT parent.id, parent.parent_id, parent.priority, ancestry.depth + 1
+                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
-                      ) SELECT priority FROM ancestry WHERE priority IS NOT NULL ORDER BY depth LIMIT 1),
-                     3
-                   )::SMALLINT AS effective_priority,
+                      ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
+                   ) AS effective_deadline,
                    g.links
             FROM task_groups g
             WHERE g.id = $1
@@ -523,19 +385,18 @@ impl Store {
         sqlx::query_as(
             r#"
             SELECT t.id, t.directory_id, t.group_id, g.name AS group_name, t.title,
-                   t.priority AS explicit_priority,
+                   t.deadline AS explicit_deadline,
                    COALESCE(
-                     t.priority,
-                     g.priority,
+                     t.deadline,
+                     g.deadline,
                      (WITH RECURSIVE ancestry AS (
-                        SELECT d.id, d.parent_id, d.priority, 0 AS depth
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
                         FROM directories d WHERE d.id = t.directory_id
                         UNION ALL
-                        SELECT parent.id, parent.parent_id, parent.priority, ancestry.depth + 1
+                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
-                      ) SELECT priority FROM ancestry WHERE priority IS NOT NULL ORDER BY depth LIMIT 1),
-                     3
-                   )::SMALLINT AS effective_priority,
+                      ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
+                   ) AS effective_deadline,
                    t.status, t.links
             FROM tasks t
             LEFT JOIN task_groups g ON g.id = t.group_id
@@ -551,22 +412,21 @@ impl Store {
     async fn groups_for_directory(&self, directory_id: i64) -> Result<Vec<GroupView>> {
         sqlx::query_as(
             r#"
-            SELECT g.id, g.name, g.priority AS explicit_priority,
+            SELECT g.id, g.name, g.deadline AS explicit_deadline,
                    COALESCE(
-                     g.priority,
+                     g.deadline,
                      (WITH RECURSIVE ancestry AS (
-                        SELECT d.id, d.parent_id, d.priority, 0 AS depth
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
                         FROM directories d WHERE d.id = g.directory_id
                         UNION ALL
-                        SELECT parent.id, parent.parent_id, parent.priority, ancestry.depth + 1
+                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
-                      ) SELECT priority FROM ancestry WHERE priority IS NOT NULL ORDER BY depth LIMIT 1),
-                     3
-                   )::SMALLINT AS effective_priority,
+                      ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
+                   ) AS effective_deadline,
                    g.links
             FROM task_groups g
             WHERE g.directory_id = $1
-            ORDER BY effective_priority, g.position, g.name
+            ORDER BY effective_deadline NULLS LAST, g.position, g.name
             "#,
         )
         .bind(directory_id)
@@ -583,24 +443,23 @@ impl Store {
         sqlx::query_as(
             r#"
             SELECT t.id, t.directory_id, t.group_id, g.name AS group_name, t.title,
-                   t.priority AS explicit_priority,
+                   t.deadline AS explicit_deadline,
                    COALESCE(
-                     t.priority,
-                     g.priority,
+                     t.deadline,
+                     g.deadline,
                      (WITH RECURSIVE ancestry AS (
-                        SELECT d.id, d.parent_id, d.priority, 0 AS depth
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
                         FROM directories d WHERE d.id = t.directory_id
                         UNION ALL
-                        SELECT parent.id, parent.parent_id, parent.priority, ancestry.depth + 1
+                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
-                      ) SELECT priority FROM ancestry WHERE priority IS NOT NULL ORDER BY depth LIMIT 1),
-                     3
-                   )::SMALLINT AS effective_priority,
+                      ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
+                   ) AS effective_deadline,
                    t.status, t.links
             FROM tasks t
             LEFT JOIN task_groups g ON g.id = t.group_id
             WHERE t.directory_id = $1 AND ($2 OR t.status = 'open')
-            ORDER BY effective_priority, COALESCE(g.position, 2147483647), t.position, t.id
+            ORDER BY effective_deadline NULLS LAST, COALESCE(g.position, 2147483647), t.position, t.id
             "#,
         )
         .bind(directory_id)
@@ -641,13 +500,13 @@ mod tests {
 
     #[test]
     fn normalizes_paths() {
-        assert_eq!(normalize_path("projects//oxia/"), "/projects/oxia");
+        assert_eq!(normalize_path("projects//example/"), "/projects/example");
         assert_eq!(normalize_path("/"), "/");
     }
 
     #[test]
     fn joins_root_and_nested_paths() {
         assert_eq!(join_path("/", "projects"), "/projects");
-        assert_eq!(join_path("/projects", "oxia"), "/projects/oxia");
+        assert_eq!(join_path("/projects", "example"), "/projects/example");
     }
 }

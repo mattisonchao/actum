@@ -16,11 +16,11 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::{
-    model::{Snapshot, TaskView, format_priority},
+    model::{Snapshot, TaskView, format_deadline},
     store::{Store, normalize_path},
 };
 
@@ -214,11 +214,13 @@ async fn run_loop(
 fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     let areas = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Percentage(35),
+        Constraint::Percentage(55),
         Constraint::Min(8),
         Constraint::Length(1),
     ])
     .split(frame.area());
+    let top_areas = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
+        .split(areas[1]);
 
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -246,7 +248,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
             .enumerate()
             .map(|(index, directory)| {
                 let line = Line::from(vec![
-                    priority_span(directory.effective_priority),
+                    deadline_span(directory.effective_deadline),
                     Span::raw(format!("  {}/", directory.name)),
                 ]);
                 let mut item = ListItem::new(line);
@@ -263,14 +265,14 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
                 .borders(Borders::ALL)
                 .title(format!(" Directories · {} ", app.root)),
         ),
-        areas[1],
+        top_areas[0],
     );
 
     let selected_task_id = app.selected_task().map(|task| task.id);
     let mut task_items = Vec::new();
     let mut selected_visual_index = 0;
     let mut visual_index = 0;
-    let task_width = usize::from(areas[2].width.saturating_sub(8)).max(8);
+    let task_width = usize::from(top_areas[1].width.saturating_sub(8)).max(8);
     for group in &app.task_snapshot.groups {
         task_items.push(ListItem::new(Line::from(Span::styled(
             format!(
@@ -329,8 +331,19 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
                 .borders(Borders::ALL)
                 .title(" Tasks · completed hidden "),
         ),
-        areas[2],
+        top_areas[1],
         &mut task_state,
+    );
+
+    let detail_title = app
+        .selected_task()
+        .map(|task| format!(" Details · Task #{} ", task.id))
+        .unwrap_or_else(|| " Details ".into());
+    frame.render_widget(
+        Paragraph::new(detail_lines(app))
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(detail_title)),
+        areas[2],
     );
     frame.render_widget(
         Paragraph::new(app.message.as_str()).style(Style::default().fg(Color::DarkGray)),
@@ -347,20 +360,10 @@ fn task_item(
     let title = format!("#{} {}", task.id, task.title);
     let mut wrapped_title = textwrap::wrap(&title, text_width).into_iter();
     let mut lines = vec![Line::from(vec![
-        priority_span(task.effective_priority),
+        deadline_span(task.effective_deadline),
         Span::raw(format!("  {}", wrapped_title.next().unwrap_or_default())),
     ])];
     lines.extend(wrapped_title.map(|line| Line::from(format!("      {line}"))));
-    if selected {
-        for link in &task.links {
-            lines.extend(textwrap::wrap(link, text_width).into_iter().map(|line| {
-                Line::from(Span::styled(
-                    format!("      {line}"),
-                    Style::default().fg(Color::Blue),
-                ))
-            }));
-        }
-    }
     let mut item = ListItem::new(lines);
     if selected {
         item = item.style(selected_style(focused));
@@ -368,20 +371,81 @@ fn task_item(
     item
 }
 
-fn priority_span(priority: i16) -> Span<'static> {
-    let style = match priority {
-        1 => Style::default()
-            .fg(Color::Rgb(255, 180, 173))
-            .bg(Color::Rgb(94, 35, 35)),
-        2 => Style::default()
-            .fg(Color::Rgb(255, 215, 130))
-            .bg(Color::Rgb(89, 67, 21)),
-        _ => Style::default()
-            .fg(Color::Rgb(189, 218, 240))
-            .bg(Color::Rgb(41, 63, 83)),
+fn detail_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(task) = app.selected_task() else {
+        return vec![Line::from(Span::styled(
+            "Select a task to see its ID, details, links, and comments.",
+            Style::default().fg(Color::DarkGray),
+        ))];
+    };
+
+    let label_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+    let group = task.group_name.as_deref().unwrap_or("Ungrouped");
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("ID ", label_style),
+            Span::styled(
+                format!("#{}", task.id),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("STATUS ", label_style),
+            Span::raw(task.status.to_ascii_uppercase()),
+            Span::raw("   "),
+            Span::styled("DEADLINE ", label_style),
+            deadline_span(task.effective_deadline),
+        ]),
+        Line::from(vec![
+            Span::styled("DIRECTORY ", label_style),
+            Span::raw(app.task_snapshot.path.clone()),
+            Span::raw("   "),
+            Span::styled("GROUP ", label_style),
+            Span::raw(group.to_owned()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("TITLE", label_style)),
+        Line::from(task.title.clone()),
+        Line::from(""),
+        Line::from(Span::styled("LINKS", label_style)),
+    ];
+
+    if task.links.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No links",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        lines.extend(task.links.iter().map(|link| {
+            Line::from(Span::styled(
+                format!("• {link}"),
+                Style::default().fg(Color::Blue),
+            ))
+        }));
     }
-    .add_modifier(Modifier::BOLD);
-    Span::styled(format!(" {} ", format_priority(priority)), style)
+
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled("COMMENTS & NOTES", label_style)),
+        Line::from(Span::styled(
+            "No comments yet",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]);
+    lines
+}
+
+fn deadline_span(deadline: Option<chrono::NaiveDate>) -> Span<'static> {
+    let style = if deadline.is_some() {
+        Style::default()
+            .fg(Color::Rgb(255, 215, 130))
+            .bg(Color::Rgb(89, 67, 21))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    Span::styled(format!(" {} ", format_deadline(deadline)), style)
 }
 
 fn selected_style(focused: bool) -> Style {
@@ -429,4 +493,61 @@ fn open_link(link: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     Command::new("cmd").args(["/C", "start", link]).spawn()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::NaiveDate;
+
+    use super::*;
+
+    #[test]
+    fn details_show_the_stable_task_id_and_deadline() {
+        let empty_snapshot = Snapshot {
+            directory_id: Some(1),
+            path: "/projects".into(),
+            directories: Vec::new(),
+            groups: Vec::new(),
+            ungrouped_tasks: Vec::new(),
+        };
+        let task_snapshot = Snapshot {
+            directory_id: Some(2),
+            path: "/projects/example".into(),
+            directories: Vec::new(),
+            groups: Vec::new(),
+            ungrouped_tasks: vec![TaskView {
+                id: 42,
+                directory_id: 2,
+                group_id: None,
+                group_name: None,
+                title: "Ship the release".into(),
+                explicit_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
+                effective_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
+                status: "open".into(),
+                links: vec!["https://example.com/task/42".into()],
+            }],
+        };
+        let app = App {
+            root: "/projects".into(),
+            root_snapshot: empty_snapshot,
+            task_snapshot,
+            directory_index: 0,
+            task_index: 0,
+            focus: Focus::Tasks,
+            message: String::new(),
+        };
+
+        let mut rendered = String::new();
+        for line in detail_lines(&app) {
+            for span in line.spans {
+                rendered.push_str(span.content.as_ref());
+            }
+            rendered.push('\n');
+        }
+
+        assert!(rendered.contains("#42"));
+        assert!(rendered.contains("DDL 2030-06-01"));
+        assert!(rendered.contains("/projects/example"));
+        assert!(rendered.contains("COMMENTS & NOTES"));
+    }
 }

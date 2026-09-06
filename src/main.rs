@@ -6,7 +6,7 @@ mod tui;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use model::{Snapshot, format_priority, parse_priority};
+use model::{Snapshot, format_deadline, parse_deadline};
 use store::Store;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://actum:actum@127.0.0.1:55432/actum";
@@ -25,8 +25,9 @@ struct Cli {
 enum Command {
     /// Apply database migrations.
     Migrate,
-    /// Load an idempotent sample workspace based on the current task list.
-    Seed,
+    /// Ensure the default workspace root exists.
+    #[command(visible_alias = "seed")]
+    Init,
     /// Print a directory's pending work with raw links.
     List {
         #[arg(default_value = "/projects")]
@@ -62,8 +63,8 @@ enum Command {
 enum DirectoryCommand {
     Add {
         path: String,
-        #[arg(long)]
-        priority: Option<String>,
+        #[arg(long = "deadline", visible_alias = "ddl", value_name = "YYYY-MM-DD")]
+        deadline: Option<String>,
     },
 }
 
@@ -72,8 +73,8 @@ enum GroupCommand {
     Add {
         directory: String,
         name: String,
-        #[arg(long)]
-        priority: Option<String>,
+        #[arg(long = "deadline", visible_alias = "ddl", value_name = "YYYY-MM-DD")]
+        deadline: Option<String>,
         #[arg(long = "link")]
         links: Vec<String>,
     },
@@ -86,8 +87,8 @@ enum TaskCommand {
         title: String,
         #[arg(long)]
         group: Option<String>,
-        #[arg(long)]
-        priority: Option<String>,
+        #[arg(long = "deadline", visible_alias = "ddl", value_name = "YYYY-MM-DD")]
+        deadline: Option<String>,
         #[arg(long = "link")]
         links: Vec<String>,
     },
@@ -104,6 +105,12 @@ enum TaskCommand {
         #[arg(long)]
         group: Option<String>,
     },
+    /// Set a task's deadline by stable ID.
+    Deadline {
+        id: i64,
+        #[arg(value_name = "YYYY-MM-DD")]
+        deadline: String,
+    },
 }
 
 #[tokio::main]
@@ -119,18 +126,17 @@ async fn main() -> Result<()> {
             tui::run(store, root).await?;
         }
         Some(Command::Migrate) => println!("Database is ready."),
-        Some(Command::Seed) => {
-            store.seed().await?;
-            println!("Seeded the Actum workspace.");
+        Some(Command::Init) => {
+            store.initialize().await?;
+            println!("Initialized the Actum workspace.");
         }
         Some(Command::List { directory, all }) => {
             print_snapshot(&store.snapshot(&directory, all).await?);
         }
         Some(Command::Directory { command }) => match command {
-            DirectoryCommand::Add { path, priority } => {
-                let id = store
-                    .ensure_directory(&path, parse_priority(priority.as_deref())?)
-                    .await?;
+            DirectoryCommand::Add { path, deadline } => {
+                let deadline = parse_deadline(deadline.as_deref())?;
+                let id = store.ensure_directory(&path, deadline).await?;
                 println!("Created or updated directory #{id}: {path}");
             }
         },
@@ -138,20 +144,16 @@ async fn main() -> Result<()> {
             GroupCommand::Add {
                 directory,
                 name,
-                priority,
+                deadline,
                 links,
             } => {
+                let deadline = parse_deadline(deadline.as_deref())?;
                 let group = store
-                    .create_group(
-                        &directory,
-                        &name,
-                        parse_priority(priority.as_deref())?,
-                        &links,
-                    )
+                    .create_group(&directory, &name, deadline, &links)
                     .await?;
                 println!(
                     "{} {}",
-                    format_priority(group.effective_priority),
+                    format_deadline(group.effective_deadline),
                     group.name
                 );
                 print_links(&group.links, "  ");
@@ -162,22 +164,17 @@ async fn main() -> Result<()> {
                 directory,
                 title,
                 group,
-                priority,
+                deadline,
                 links,
             } => {
+                let deadline = parse_deadline(deadline.as_deref())?;
                 let task = store
-                    .create_task(
-                        &directory,
-                        group.as_deref(),
-                        &title,
-                        parse_priority(priority.as_deref())?,
-                        &links,
-                    )
+                    .create_task(&directory, group.as_deref(), &title, deadline, &links)
                     .await?;
                 println!(
                     "#{} {} {}",
                     task.id,
-                    format_priority(task.effective_priority),
+                    format_deadline(task.effective_deadline),
                     task.title
                 );
                 print_links(&task.links, "  ");
@@ -201,6 +198,12 @@ async fn main() -> Result<()> {
                 println!("Moved #{} to {directory}: {}", task.id, task.title);
                 print_links(&task.links, "  ");
             }
+            TaskCommand::Deadline { id, deadline } => {
+                let deadline = parse_deadline(Some(&deadline))?
+                    .expect("a required deadline always parses to a date");
+                let task = store.set_task_deadline(id, deadline).await?;
+                println!("Set #{} DDL {}: {}", task.id, deadline, task.title);
+            }
         },
         Some(Command::Sidebar { root }) => tui::run(store, root).await?,
         Some(Command::Mcp) => mcp::run(store).await?,
@@ -213,14 +216,14 @@ fn print_snapshot(snapshot: &Snapshot) {
     for directory in &snapshot.directories {
         println!(
             "  {} {}/",
-            format_priority(directory.effective_priority),
+            format_deadline(directory.effective_deadline),
             directory.name
         );
     }
     for group in &snapshot.groups {
         println!(
             "\n  {} {} ({})",
-            format_priority(group.group.effective_priority),
+            format_deadline(group.group.effective_deadline),
             group.group.name,
             group.tasks.len()
         );
@@ -230,7 +233,7 @@ fn print_snapshot(snapshot: &Snapshot) {
             println!(
                 "    [{marker}] #{} {} {}",
                 task.id,
-                format_priority(task.effective_priority),
+                format_deadline(task.effective_deadline),
                 task.title
             );
             print_links(&task.links, "        ");
@@ -243,7 +246,7 @@ fn print_snapshot(snapshot: &Snapshot) {
             println!(
                 "    [{marker}] #{} {} {}",
                 task.id,
-                format_priority(task.effective_priority),
+                format_deadline(task.effective_deadline),
                 task.title
             );
             print_links(&task.links, "        ");

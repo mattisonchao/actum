@@ -14,6 +14,16 @@ actum ────────────────────────�
 
 Actum does not capture shell input, proxy commands, create splits, or implement terminal emulation. The user's terminal application owns the layout and native shell; Actum renders only inside the pane where it is started.
 
+The TUI uses one page with two rows:
+
+```text
+┌─ directories ─────┬─ tasks ─────────────────────────┐
+│ project tree      │ compact list with unique IDs    │
+├───────────────────┴─────────────────────────────────┤
+│ selected task details, links, comments, and notes   │
+└─────────────────────────────────────────────────────┘
+```
+
 ## Hierarchy
 
 ```text
@@ -27,8 +37,8 @@ directory/
 - Directories may nest.
 - Groups belong to exactly one directory.
 - Tasks belong to one directory and optionally one group in that directory.
-- Directories, groups, and tasks can set `P1`, `P2`, or `P3`.
-- A missing priority inherits from the closest ancestor.
+- Directories, groups, and tasks can set a `YYYY-MM-DD` deadline.
+- A missing deadline inherits from the closest ancestor, and items without one sort last.
 - Completed tasks are hidden by default.
 - Groups and tasks retain raw external links.
 

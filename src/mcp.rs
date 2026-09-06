@@ -5,7 +5,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use crate::{model::parse_priority, store::Store};
+use crate::{model::parse_deadline, store::Store};
 
 #[derive(Clone)]
 pub struct ActumMcp {
@@ -22,10 +22,10 @@ struct ListItems {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct CreateDirectory {
-    /// Absolute nested directory path, for example /projects/oxia.
+    /// Absolute nested directory path, for example /projects/example.
     path: String,
-    /// Optional P1, P2, or P3 priority.
-    priority: Option<String>,
+    /// Optional deadline in YYYY-MM-DD format.
+    deadline: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -34,8 +34,8 @@ struct CreateGroup {
     directory: String,
     /// Group name unique within the directory.
     name: String,
-    /// Optional P1, P2, or P3 priority.
-    priority: Option<String>,
+    /// Optional deadline in YYYY-MM-DD format.
+    deadline: Option<String>,
     /// Raw external links associated with the group.
     links: Option<Vec<String>>,
 }
@@ -48,8 +48,8 @@ struct CreateTask {
     group: Option<String>,
     /// Actionable task title.
     title: String,
-    /// Optional P1, P2, or P3 priority.
-    priority: Option<String>,
+    /// Optional deadline in YYYY-MM-DD format.
+    deadline: Option<String>,
     /// Raw external links associated with the task.
     links: Option<Vec<String>>,
 }
@@ -78,6 +78,14 @@ struct MoveTask {
     group: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SetTaskDeadline {
+    /// Stable numeric task ID returned by Actum.
+    task_id: i64,
+    /// Deadline in YYYY-MM-DD format.
+    deadline: String,
+}
+
 #[tool_router]
 impl ActumMcp {
     fn new(store: Store) -> Self {
@@ -85,7 +93,7 @@ impl ActumMcp {
     }
 
     #[tool(
-        description = "List directories, groups, and tasks. Completed tasks are hidden by default. Returns stable IDs, effective priorities, statuses, and raw links."
+        description = "List directories, groups, and tasks. Completed tasks are hidden by default. Returns stable IDs, effective deadlines, statuses, and raw links."
     )]
     async fn list_items(
         &self,
@@ -103,35 +111,35 @@ impl ActumMcp {
     }
 
     #[tool(
-        description = "Create a nested directory or update its explicit priority. Parent directories are created automatically."
+        description = "Create a nested directory or update its explicit deadline. Parent directories are created automatically."
     )]
     async fn create_directory(
         &self,
         Parameters(input): Parameters<CreateDirectory>,
     ) -> Result<String, McpError> {
-        let priority = parse_priority(input.priority.as_deref()).map_err(mcp_error)?;
+        let deadline = parse_deadline(input.deadline.as_deref()).map_err(mcp_error)?;
         let id = self
             .store
-            .ensure_directory(&input.path, priority)
+            .ensure_directory(&input.path, deadline)
             .await
             .map_err(mcp_error)?;
         Ok(serde_json::json!({ "id": id, "path": input.path }).to_string())
     }
 
     #[tool(
-        description = "Create a group inside an existing directory. Reusing the same name updates its supplied priority and links."
+        description = "Create a group inside an existing directory. Reusing the same name updates its supplied deadline and links."
     )]
     async fn create_group(
         &self,
         Parameters(input): Parameters<CreateGroup>,
     ) -> Result<String, McpError> {
-        let priority = parse_priority(input.priority.as_deref()).map_err(mcp_error)?;
+        let deadline = parse_deadline(input.deadline.as_deref()).map_err(mcp_error)?;
         let group = self
             .store
             .create_group(
                 &input.directory,
                 &input.name,
-                priority,
+                deadline,
                 &input.links.unwrap_or_default(),
             )
             .await
@@ -146,14 +154,14 @@ impl ActumMcp {
         &self,
         Parameters(input): Parameters<CreateTask>,
     ) -> Result<String, McpError> {
-        let priority = parse_priority(input.priority.as_deref()).map_err(mcp_error)?;
+        let deadline = parse_deadline(input.deadline.as_deref()).map_err(mcp_error)?;
         let task = self
             .store
             .create_task(
                 &input.directory,
                 input.group.as_deref(),
                 &input.title,
-                priority,
+                deadline,
                 &input.links.unwrap_or_default(),
             )
             .await
@@ -200,12 +208,28 @@ impl ActumMcp {
             .map_err(mcp_error)?;
         serde_json::to_string_pretty(&task).map_err(mcp_error)
     }
+
+    #[tool(description = "Set one task's deadline by stable ID using YYYY-MM-DD format.")]
+    async fn set_task_deadline(
+        &self,
+        Parameters(input): Parameters<SetTaskDeadline>,
+    ) -> Result<String, McpError> {
+        let deadline = parse_deadline(Some(&input.deadline))
+            .map_err(mcp_error)?
+            .expect("a required deadline always parses to a date");
+        let task = self
+            .store
+            .set_task_deadline(input.task_id, deadline)
+            .await
+            .map_err(mcp_error)?;
+        serde_json::to_string_pretty(&task).map_err(mcp_error)
+    }
 }
 
 #[tool_handler(
     name = "actum",
     version = "0.1.0",
-    instructions = "Actum manages a directory → group → task hierarchy. Use stable IDs for mutations, preserve raw links, treat P1 as highest priority, hide completed tasks unless requested, and never infer completion from external link status alone. Delete tasks only when the user explicitly requests deletion; otherwise use completion to preserve history."
+    instructions = "Actum manages a directory → group → task hierarchy. Use stable IDs for mutations, preserve raw links, treat earlier deadlines as more urgent, hide completed tasks unless requested, and never infer completion from external link status alone. Delete tasks only when the user explicitly requests deletion; otherwise use completion to preserve history."
 )]
 impl ServerHandler for ActumMcp {}
 
