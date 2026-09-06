@@ -38,7 +38,7 @@ directory/
 - Groups belong to exactly one directory.
 - Tasks belong to one directory and optionally one group in that directory.
 - Directories, groups, and tasks can set a `YYYY-MM-DD` deadline.
-- A missing deadline inherits from the closest ancestor, and items without one sort last.
+- A missing deadline inherits from the closest ancestor. Tasks sort by deadline, while groups and directories roll up the earliest deadline from their open descendants; undated items sort last.
 - Completed tasks are hidden by default.
 - Groups and tasks retain raw external links.
 

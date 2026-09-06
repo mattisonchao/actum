@@ -20,7 +20,7 @@ use ratatui::{
 };
 
 use crate::{
-    model::{Snapshot, TaskView, format_deadline},
+    model::{GroupWithTasks, Snapshot, TaskView, format_deadline},
     store::{Store, normalize_path},
 };
 
@@ -28,6 +28,31 @@ use crate::{
 enum Focus {
     Directories,
     Tasks,
+}
+
+#[derive(Clone, Copy)]
+enum TaskSection<'a> {
+    Group(&'a GroupWithTasks),
+    Ungrouped(&'a [TaskView]),
+}
+
+impl<'a> TaskSection<'a> {
+    fn tasks(self) -> &'a [TaskView] {
+        match self {
+            Self::Group(group) => &group.tasks,
+            Self::Ungrouped(tasks) => tasks,
+        }
+    }
+
+    fn deadline(self) -> Option<chrono::NaiveDate> {
+        match self {
+            Self::Group(group) => group.group.effective_deadline,
+            Self::Ungrouped(tasks) => tasks
+                .iter()
+                .filter_map(|task| task.effective_deadline)
+                .min(),
+        }
+    }
 }
 
 struct App {
@@ -273,36 +298,21 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     let mut selected_visual_index = 0;
     let mut visual_index = 0;
     let task_width = usize::from(top_areas[1].width.saturating_sub(8)).max(8);
-    for group in &app.task_snapshot.groups {
-        task_items.push(ListItem::new(Line::from(Span::styled(
-            format!(
+    for section in task_sections(&app.task_snapshot) {
+        let heading = match section {
+            TaskSection::Group(group) => format!(
                 "{}  {} open",
                 group.group.name.to_ascii_uppercase(),
                 group.tasks.len()
             ),
-            Style::default().fg(Color::DarkGray),
-        ))));
-        visual_index += 1;
-        for task in &group.tasks {
-            if selected_task_id == Some(task.id) {
-                selected_visual_index = visual_index;
-            }
-            task_items.push(task_item(
-                task,
-                selected_task_id == Some(task.id),
-                matches!(app.focus, Focus::Tasks),
-                task_width,
-            ));
-            visual_index += 1;
-        }
-    }
-    if !app.task_snapshot.ungrouped_tasks.is_empty() {
+            TaskSection::Ungrouped(_) => "UNGROUPED".into(),
+        };
         task_items.push(ListItem::new(Line::from(Span::styled(
-            "UNGROUPED",
+            heading,
             Style::default().fg(Color::DarkGray),
         ))));
         visual_index += 1;
-        for task in &app.task_snapshot.ungrouped_tasks {
+        for task in section.tasks() {
             if selected_task_id == Some(task.id) {
                 selected_visual_index = visual_index;
             }
@@ -457,12 +467,26 @@ fn selected_style(focused: bool) -> Style {
 }
 
 fn flatten_tasks(snapshot: &Snapshot) -> Vec<&TaskView> {
-    snapshot
+    task_sections(snapshot)
+        .into_iter()
+        .flat_map(|section| section.tasks().iter())
+        .collect()
+}
+
+fn task_sections(snapshot: &Snapshot) -> Vec<TaskSection<'_>> {
+    let mut sections = snapshot
         .groups
         .iter()
-        .flat_map(|group| group.tasks.iter())
-        .chain(snapshot.ungrouped_tasks.iter())
-        .collect()
+        .map(TaskSection::Group)
+        .collect::<Vec<_>>();
+    if !snapshot.ungrouped_tasks.is_empty() {
+        sections.push(TaskSection::Ungrouped(&snapshot.ungrouped_tasks));
+    }
+    sections.sort_by_key(|section| {
+        let deadline = section.deadline();
+        (deadline.is_none(), deadline)
+    });
+    sections
 }
 
 fn shifted_index(current: usize, delta: isize, len: usize) -> usize {
@@ -549,5 +573,53 @@ mod tests {
         assert!(rendered.contains("DDL 2030-06-01"));
         assert!(rendered.contains("/projects/example"));
         assert!(rendered.contains("COMMENTS & NOTES"));
+    }
+
+    #[test]
+    fn dated_sections_sort_before_undated_sections() {
+        let dated_task = TaskView {
+            id: 2,
+            directory_id: 2,
+            group_id: None,
+            group_name: None,
+            title: "Dated task".into(),
+            explicit_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
+            effective_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
+            status: "open".into(),
+            links: Vec::new(),
+        };
+        let undated_task = TaskView {
+            id: 1,
+            directory_id: 2,
+            group_id: Some(3),
+            group_name: Some("Later".into()),
+            title: "Undated task".into(),
+            explicit_deadline: None,
+            effective_deadline: None,
+            status: "open".into(),
+            links: Vec::new(),
+        };
+        let snapshot = Snapshot {
+            directory_id: Some(2),
+            path: "/projects/example".into(),
+            directories: Vec::new(),
+            groups: vec![GroupWithTasks {
+                group: crate::model::GroupView {
+                    id: 3,
+                    name: "Later".into(),
+                    explicit_deadline: None,
+                    effective_deadline: None,
+                    links: Vec::new(),
+                },
+                tasks: vec![undated_task],
+            }],
+            ungrouped_tasks: vec![dated_task],
+        };
+
+        let ids = flatten_tasks(&snapshot)
+            .into_iter()
+            .map(|task| task.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![2, 1]);
     }
 }

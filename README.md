@@ -65,7 +65,7 @@ cargo run -- task complete 1 --note "Verified in production"
 cargo run -- list /projects/example --all
 ```
 
-Deadlines use `YYYY-MM-DD`. A missing task deadline inherits from its group, then its directory; items without a deadline sort last.
+Deadlines use `YYYY-MM-DD`. A missing task deadline inherits from its group, then its directory. Tasks sort by deadline, and each group or directory rolls up its earliest open-task deadline so urgent work rises through the dashboard; undated items sort last.
 
 ## Connect an AI client with MCP
 

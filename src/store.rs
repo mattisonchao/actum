@@ -269,15 +269,52 @@ impl Store {
             SELECT child.id,
                    child.name,
                    child.deadline AS explicit_deadline,
-                   (WITH RECURSIVE ancestry AS (
-                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
-                        FROM directories d WHERE d.id = child.id
-                        UNION ALL
-                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
-                        FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
-                      ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1
-                   ) AS effective_deadline
+                   COALESCE(task_rollup.deadline, inherited.deadline) AS effective_deadline
             FROM directories child
+            LEFT JOIN LATERAL (
+                WITH RECURSIVE ancestry AS (
+                    SELECT d.id, d.parent_id, d.deadline, 0 AS depth
+                    FROM directories d WHERE d.id = child.id
+                    UNION ALL
+                    SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
+                    FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
+                )
+                SELECT deadline
+                FROM ancestry
+                WHERE deadline IS NOT NULL
+                ORDER BY depth
+                LIMIT 1
+            ) inherited ON true
+            LEFT JOIN LATERAL (
+                WITH RECURSIVE descendants AS (
+                    SELECT child.id
+                    UNION ALL
+                    SELECT descendant.id
+                    FROM directories descendant
+                    JOIN descendants ON descendant.parent_id = descendants.id
+                )
+                SELECT MIN(COALESCE(
+                    task.deadline,
+                    task_group.deadline,
+                    (WITH RECURSIVE task_ancestry AS (
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
+                        FROM directories d WHERE d.id = task.directory_id
+                        UNION ALL
+                        SELECT parent.id, parent.parent_id, parent.deadline, task_ancestry.depth + 1
+                        FROM directories parent
+                        JOIN task_ancestry ON parent.id = task_ancestry.parent_id
+                    )
+                    SELECT deadline
+                    FROM task_ancestry
+                    WHERE deadline IS NOT NULL
+                    ORDER BY depth
+                    LIMIT 1)
+                )) AS deadline
+                FROM descendants
+                JOIN tasks task ON task.directory_id = descendants.id
+                LEFT JOIN task_groups task_group ON task_group.id = task.group_id
+                WHERE task.status = 'open'
+            ) task_rollup ON true
             WHERE child.parent_id IS NOT DISTINCT FROM $1
             ORDER BY effective_deadline NULLS LAST, child.name
             "#,
@@ -361,6 +398,19 @@ impl Store {
             r#"
             SELECT g.id, g.name, g.deadline AS explicit_deadline,
                    COALESCE(
+                     (SELECT MIN(COALESCE(
+                        task.deadline,
+                        g.deadline,
+                        (WITH RECURSIVE ancestry AS (
+                            SELECT d.id, d.parent_id, d.deadline, 0 AS depth
+                            FROM directories d WHERE d.id = g.directory_id
+                            UNION ALL
+                            SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
+                            FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
+                        ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
+                      ))
+                      FROM tasks task
+                      WHERE task.group_id = g.id AND task.status = 'open'),
                      g.deadline,
                      (WITH RECURSIVE ancestry AS (
                         SELECT d.id, d.parent_id, d.deadline, 0 AS depth
@@ -414,6 +464,19 @@ impl Store {
             r#"
             SELECT g.id, g.name, g.deadline AS explicit_deadline,
                    COALESCE(
+                     (SELECT MIN(COALESCE(
+                        task.deadline,
+                        g.deadline,
+                        (WITH RECURSIVE ancestry AS (
+                            SELECT d.id, d.parent_id, d.deadline, 0 AS depth
+                            FROM directories d WHERE d.id = g.directory_id
+                            UNION ALL
+                            SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
+                            FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
+                        ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
+                      ))
+                      FROM tasks task
+                      WHERE task.group_id = g.id AND task.status = 'open'),
                      g.deadline,
                      (WITH RECURSIVE ancestry AS (
                         SELECT d.id, d.parent_id, d.deadline, 0 AS depth
