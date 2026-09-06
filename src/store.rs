@@ -200,6 +200,20 @@ impl Store {
         self.task_by_id(task_id).await
     }
 
+    pub async fn delete_task(&self, task_id: i64) -> Result<TaskView> {
+        let task = self.task_by_id(task_id).await?;
+        let deleted = sqlx::query_scalar::<_, i64>("DELETE FROM tasks WHERE id = $1 RETURNING id")
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if deleted.is_none() {
+            bail!("task #{task_id} does not exist");
+        }
+        self.notify("task").await?;
+        Ok(task)
+    }
+
     pub async fn move_task(
         &self,
         task_id: i64,

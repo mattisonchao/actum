@@ -106,6 +106,7 @@ Restart or reload the AI client after adding the server. It can then discover th
 - `create_task`
 - `move_task`
 - `complete_task`
+- `delete_task` — permanently removes a task only when explicitly requested
 
 The server advertises its task-management instructions and tool schemas during the MCP handshake; no Actum-specific `AGENTS.md` is required.
 

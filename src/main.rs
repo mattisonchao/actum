@@ -96,6 +96,8 @@ enum TaskCommand {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Permanently delete a task by stable ID.
+    Delete { id: i64 },
     Move {
         id: i64,
         directory: String,
@@ -183,6 +185,11 @@ async fn main() -> Result<()> {
             TaskCommand::Complete { id, note } => {
                 let task = store.complete_task(id, note.as_deref()).await?;
                 println!("Completed #{}: {}", task.id, task.title);
+                print_links(&task.links, "  ");
+            }
+            TaskCommand::Delete { id } => {
+                let task = store.delete_task(id).await?;
+                println!("Deleted #{}: {}", task.id, task.title);
                 print_links(&task.links, "  ");
             }
             TaskCommand::Move {

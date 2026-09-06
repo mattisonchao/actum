@@ -63,6 +63,12 @@ struct CompleteTask {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeleteTask {
+    /// Stable numeric task ID returned by Actum.
+    task_id: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct MoveTask {
     /// Stable numeric task ID returned by Actum.
     task_id: i64,
@@ -170,6 +176,21 @@ impl ActumMcp {
         serde_json::to_string_pretty(&task).map_err(mcp_error)
     }
 
+    #[tool(
+        description = "Permanently delete one task by stable ID. This is irreversible; call only when the user explicitly asks to remove or delete that task. Use complete_task when history should be retained."
+    )]
+    async fn delete_task(
+        &self,
+        Parameters(input): Parameters<DeleteTask>,
+    ) -> Result<String, McpError> {
+        let task = self
+            .store
+            .delete_task(input.task_id)
+            .await
+            .map_err(mcp_error)?;
+        serde_json::to_string_pretty(&task).map_err(mcp_error)
+    }
+
     #[tool(description = "Move one task by stable ID to an existing directory and optional group.")]
     async fn move_task(&self, Parameters(input): Parameters<MoveTask>) -> Result<String, McpError> {
         let task = self
@@ -184,7 +205,7 @@ impl ActumMcp {
 #[tool_handler(
     name = "actum",
     version = "0.1.0",
-    instructions = "Actum manages a directory → group → task hierarchy. Use stable IDs for mutations, preserve raw links, treat P1 as highest priority, hide completed tasks unless requested, and never infer completion from external link status alone."
+    instructions = "Actum manages a directory → group → task hierarchy. Use stable IDs for mutations, preserve raw links, treat P1 as highest priority, hide completed tasks unless requested, and never infer completion from external link status alone. Delete tasks only when the user explicitly requests deletion; otherwise use completion to preserve history."
 )]
 impl ServerHandler for ActumMcp {}
 
