@@ -2,7 +2,7 @@
 
 Actum is a terminal-first task manager. PostgreSQL stores a directory → group → task hierarchy, a small TUI renders the live database in a terminal sidebar, and an MCP server gives AI agents a typed interface to the same operations.
 
-Actum does not emulate a terminal. Keep your normal shell on the left and run `actum` in a terminal or multiplexer split on the right.
+Actum runs only the task sidebar. Your terminal owns the panes, so the shell beside Actum remains a completely native terminal.
 
 ## First run
 
@@ -19,15 +19,15 @@ cargo run -- list /projects/oxia
 
 The database listens only on `127.0.0.1:55432`. Its data persists in the `actum-postgres-data` Docker volume.
 
-## Open the sidebar
+## Start Actum
 
-Create a right-side split in your terminal, then run:
+In Ghostty, press `⌘D` to create a native right split, then run one command in that pane:
 
 ```bash
 actum
 ```
 
-The left pane remains a native shell and can run any command or AI agent.
+The left pane remains your native shell and can run any command or AI agent. The right pane reads the same PostgreSQL data used by the CLI and MCP server. Other terminal applications work too; use their normal split-pane action.
 
 Sidebar keys:
 
@@ -37,7 +37,7 @@ Sidebar keys:
 - `Backspace`, `h`, or left arrow: move to the parent directory
 - `Space`: complete the selected task
 - `r`: refresh
-- `q`: quit
+- `q`: quit Actum in the task pane
 
 Completed tasks are hidden by default. The sidebar also refreshes once per second after changes made by another CLI or MCP process.
 
@@ -64,22 +64,31 @@ cargo run -- list /projects/example --all
 
 Priorities can be `P1`, `P2`, or `P3`. Missing task priority inherits from its group, then its directory.
 
-## MCP server
+## Connect an AI client with MCP
 
-Build the binary and configure an MCP client to launch it over stdio:
+Actum includes a local MCP server. Configure your AI client to launch the installed binary over stdio; Actum and the sidebar will then share the same PostgreSQL tasks.
+
+### Codex
+
+Add Actum with the Codex CLI:
 
 ```bash
-cargo build --release
-./target/release/actum mcp
+codex mcp add actum \
+  --env DATABASE_URL=postgres://actum:actum@127.0.0.1:55432/actum \
+  -- "$(command -v actum)" mcp
 ```
 
-Example client configuration:
+Restart Codex after adding the server. You can confirm the connection with `/mcp` in Codex or `codex mcp list`. See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp).
+
+### JSON-based clients
+
+Use the absolute path reported by `command -v actum` as `command`. For example:
 
 ```json
 {
   "mcpServers": {
     "actum": {
-      "command": "/absolute/path/to/actum/target/release/actum",
+      "command": "/Users/you/.cargo/bin/actum",
       "args": ["mcp"],
       "env": {
         "DATABASE_URL": "postgres://actum:actum@127.0.0.1:55432/actum"
@@ -89,7 +98,7 @@ Example client configuration:
 }
 ```
 
-Available MCP tools:
+Restart or reload the AI client after adding the server. It can then discover these tools and manage the same data shown in the sidebar:
 
 - `list_items`
 - `create_directory`
@@ -98,7 +107,7 @@ Available MCP tools:
 - `move_task`
 - `complete_task`
 
-The server advertises its own task-management instructions; no Actum-specific `AGENTS.md` is required.
+The server advertises its task-management instructions and tool schemas during the MCP handshake; no Actum-specific `AGENTS.md` is required.
 
 ## Development
 

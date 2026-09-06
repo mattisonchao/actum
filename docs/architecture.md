@@ -12,7 +12,7 @@ actum CLI ────────────────────┼── 
 actum ────────────────────────┘
 ```
 
-Actum does not capture shell input, proxy commands, or implement terminal emulation. A terminal-native split, Zellij, or tmux composes the native shell and Actum sidebar.
+Actum does not capture shell input, proxy commands, create splits, or implement terminal emulation. The user's terminal application owns the layout and native shell; Actum renders only inside the pane where it is started.
 
 ## Hierarchy
 
