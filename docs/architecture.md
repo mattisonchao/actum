@@ -40,6 +40,7 @@ directory/
 - Directories, groups, and tasks can set a `YYYY-MM-DD` deadline.
 - A missing deadline inherits from the closest ancestor. Tasks sort by deadline, while groups and directories roll up the earliest deadline from their open descendants; undated items sort last.
 - Completed tasks are hidden by default.
+- A project's nested `finished/` directory preserves completed task IDs and groups. The shared store recognizes that path as an archive, so the TUI, CLI, and MCP server show completed items there automatically.
 - Groups and tasks retain raw external links.
 
 ## Interfaces

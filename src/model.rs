@@ -30,6 +30,7 @@ pub struct TaskView {
     pub explicit_deadline: Option<NaiveDate>,
     pub effective_deadline: Option<NaiveDate>,
     pub status: String,
+    pub completion_note: Option<String>,
     pub links: Vec<String>,
 }
 

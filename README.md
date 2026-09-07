@@ -29,7 +29,7 @@ actum
 
 The left pane remains your native shell and can run any command or AI agent. The right pane reads the same PostgreSQL data used by the CLI and MCP server. Other terminal applications work too; use their normal split-pane action.
 
-Inside Actum, the top row shows directories on the left and the selected directory's task list on the right. The bottom row shows the selected task's unique ID, status, deadline, location, links, and comments or notes.
+Inside Actum, the top row shows directories on the left and the selected directory's task list on the right. Colored group badges make task sections easy to scan. The bottom row shows the selected task's unique ID, status, deadline, location, links, and comments or notes.
 
 Sidebar keys:
 
@@ -42,6 +42,8 @@ Sidebar keys:
 - `q`: quit Actum in the task pane
 
 Completed tasks are hidden by default. The sidebar also refreshes once per second after changes made by another CLI or MCP process.
+
+Each project can keep completed work in a nested `finished/` directory. Actum recognizes that directory as an archive in the TUI, CLI, and MCP server: completed tasks appear automatically with their original groups, stable IDs, links, deadlines, and completion notes.
 
 ## CLI examples
 

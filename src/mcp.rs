@@ -16,7 +16,7 @@ pub struct ActumMcp {
 struct ListItems {
     /// Absolute Actum directory path. Defaults to /projects.
     directory: Option<String>,
-    /// Include completed tasks. Defaults to false.
+    /// Include completed tasks. Defaults to false except inside a finished directory.
     include_completed: Option<bool>,
 }
 
@@ -93,7 +93,7 @@ impl ActumMcp {
     }
 
     #[tool(
-        description = "List directories, groups, and tasks. Completed tasks are hidden by default. Returns stable IDs, effective deadlines, statuses, and raw links."
+        description = "List directories, groups, and tasks. Completed tasks are hidden by default and included automatically inside a finished directory. Returns stable IDs, effective deadlines, statuses, completion notes, and raw links."
     )]
     async fn list_items(
         &self,
@@ -229,7 +229,7 @@ impl ActumMcp {
 #[tool_handler(
     name = "actum",
     version = "0.1.0",
-    instructions = "Actum manages a directory → group → task hierarchy. Use stable IDs for mutations, preserve raw links, treat earlier deadlines as more urgent, hide completed tasks unless requested, and never infer completion from external link status alone. Delete tasks only when the user explicitly requests deletion; otherwise use completion to preserve history."
+    instructions = "Actum manages a directory → group → task hierarchy. Use stable IDs for mutations, preserve raw links, treat earlier deadlines as more urgent, hide completed tasks unless requested or viewing a finished directory, and never infer completion from external link status alone. Delete tasks only when the user explicitly requests deletion; otherwise use completion to preserve history."
 )]
 impl ServerHandler for ActumMcp {}
 

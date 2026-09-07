@@ -21,7 +21,7 @@ use ratatui::{
 
 use crate::{
     model::{GroupWithTasks, Snapshot, TaskView, format_deadline},
-    store::{Store, normalize_path},
+    store::{Store, is_finished_archive, normalize_path},
 };
 
 #[derive(Clone, Copy)]
@@ -213,11 +213,15 @@ async fn run_loop(
                 }
                 KeyCode::Char(' ') if matches!(app.focus, Focus::Tasks) => {
                     if let Some(task) = app.selected_task().cloned() {
-                        store
-                            .complete_task(task.id, Some("completed from sidebar"))
-                            .await?;
-                        app.message = format!("completed #{}: {}", task.id, task.title);
-                        app.refresh(store).await?;
+                        if task.status == "completed" {
+                            app.message = format!("task #{} is already completed", task.id);
+                        } else {
+                            store
+                                .complete_task(task.id, Some("completed from sidebar"))
+                                .await?;
+                            app.message = format!("completed #{}: {}", task.id, task.title);
+                            app.refresh(store).await?;
+                        }
                     }
                 }
                 KeyCode::Char('r') => {
@@ -298,19 +302,29 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     let mut selected_visual_index = 0;
     let mut visual_index = 0;
     let task_width = usize::from(top_areas[1].width.saturating_sub(8)).max(8);
+    let archive_mode = is_finished_archive(&app.task_snapshot.path);
     for section in task_sections(&app.task_snapshot) {
         let heading = match section {
-            TaskSection::Group(group) => format!(
-                "{}  {} open",
-                group.group.name.to_ascii_uppercase(),
-                group.tasks.len()
-            ),
-            TaskSection::Ungrouped(_) => "UNGROUPED".into(),
+            TaskSection::Group(group) => Line::from(vec![
+                Span::styled(
+                    format!(" {} ", group.group.name.to_ascii_uppercase()),
+                    group_badge_style(group.group.id),
+                ),
+                Span::styled(
+                    format!(
+                        "  {} {}",
+                        group.tasks.len(),
+                        if archive_mode { "finished" } else { "open" }
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            TaskSection::Ungrouped(_) => Line::from(Span::styled(
+                "UNGROUPED",
+                Style::default().fg(Color::DarkGray),
+            )),
         };
-        task_items.push(ListItem::new(Line::from(Span::styled(
-            heading,
-            Style::default().fg(Color::DarkGray),
-        ))));
+        task_items.push(ListItem::new(heading));
         visual_index += 1;
         for task in section.tasks() {
             if selected_task_id == Some(task.id) {
@@ -327,7 +341,11 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     }
     if task_items.is_empty() {
         task_items.push(ListItem::new(Line::from(Span::styled(
-            "No pending tasks",
+            if archive_mode {
+                "No finished tasks"
+            } else {
+                "No pending tasks"
+            },
             Style::default().fg(Color::DarkGray),
         ))));
     }
@@ -335,12 +353,13 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     if selected_task_id.is_some() {
         task_state.select(Some(selected_visual_index));
     }
+    let task_title = if archive_mode {
+        " Tasks · finished archive "
+    } else {
+        " Tasks · completed hidden "
+    };
     frame.render_stateful_widget(
-        List::new(task_items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Tasks · completed hidden "),
-        ),
+        List::new(task_items).block(Block::default().borders(Borders::ALL).title(task_title)),
         top_areas[1],
         &mut task_state,
     );
@@ -438,10 +457,15 @@ fn detail_lines(app: &App) -> Vec<Line<'static>> {
     lines.extend([
         Line::from(""),
         Line::from(Span::styled("COMMENTS & NOTES", label_style)),
-        Line::from(Span::styled(
-            "No comments yet",
-            Style::default().fg(Color::DarkGray),
-        )),
+        task.completion_note.as_ref().map_or_else(
+            || {
+                Line::from(Span::styled(
+                    "No comments yet",
+                    Style::default().fg(Color::DarkGray),
+                ))
+            },
+            |note| Line::from(note.clone()),
+        ),
     ]);
     lines
 }
@@ -456,6 +480,24 @@ fn deadline_span(deadline: Option<chrono::NaiveDate>) -> Span<'static> {
         Style::default().fg(Color::DarkGray)
     };
     Span::styled(format!(" {} ", format_deadline(deadline)), style)
+}
+
+fn group_badge_style(group_id: i64) -> Style {
+    const BACKGROUNDS: [Color; 8] = [
+        Color::Rgb(48, 78, 160),
+        Color::Rgb(104, 63, 151),
+        Color::Rgb(20, 108, 105),
+        Color::Rgb(145, 79, 24),
+        Color::Rgb(132, 52, 90),
+        Color::Rgb(49, 105, 65),
+        Color::Rgb(64, 73, 140),
+        Color::Rgb(132, 61, 48),
+    ];
+    let palette_index = group_id.rem_euclid(BACKGROUNDS.len() as i64) as usize;
+    Style::default()
+        .fg(Color::White)
+        .bg(BACKGROUNDS[palette_index])
+        .add_modifier(Modifier::BOLD)
 }
 
 fn selected_style(focused: bool) -> Style {
@@ -548,6 +590,7 @@ mod tests {
                 explicit_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
                 effective_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
                 status: "open".into(),
+                completion_note: Some("Verified in production".into()),
                 links: vec!["https://example.com/task/42".into()],
             }],
         };
@@ -573,6 +616,7 @@ mod tests {
         assert!(rendered.contains("DDL 2030-06-01"));
         assert!(rendered.contains("/projects/example"));
         assert!(rendered.contains("COMMENTS & NOTES"));
+        assert!(rendered.contains("Verified in production"));
     }
 
     #[test]
@@ -586,6 +630,7 @@ mod tests {
             explicit_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
             effective_deadline: NaiveDate::from_ymd_opt(2030, 6, 1),
             status: "open".into(),
+            completion_note: None,
             links: Vec::new(),
         };
         let undated_task = TaskView {
@@ -597,6 +642,7 @@ mod tests {
             explicit_deadline: None,
             effective_deadline: None,
             status: "open".into(),
+            completion_note: None,
             links: Vec::new(),
         };
         let snapshot = Snapshot {
@@ -621,5 +667,13 @@ mod tests {
             .map(|task| task.id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec![2, 1]);
+    }
+
+    #[test]
+    fn group_badges_have_stable_colored_backgrounds() {
+        let first = group_badge_style(7);
+        assert!(first.bg.is_some());
+        assert_eq!(first, group_badge_style(7));
+        assert_ne!(first, group_badge_style(8));
     }
 }

@@ -28,7 +28,7 @@ enum Command {
     /// Ensure the default workspace root exists.
     #[command(visible_alias = "seed")]
     Init,
-    /// Print a directory's pending work with raw links.
+    /// Print a directory's work with raw links.
     List {
         #[arg(default_value = "/projects")]
         directory: String,
@@ -237,6 +237,7 @@ fn print_snapshot(snapshot: &Snapshot) {
                 task.title
             );
             print_links(&task.links, "        ");
+            print_completion_note(task.completion_note.as_deref(), "        ");
         }
     }
     if !snapshot.ungrouped_tasks.is_empty() {
@@ -250,6 +251,7 @@ fn print_snapshot(snapshot: &Snapshot) {
                 task.title
             );
             print_links(&task.links, "        ");
+            print_completion_note(task.completion_note.as_deref(), "        ");
         }
     }
 }
@@ -257,5 +259,11 @@ fn print_snapshot(snapshot: &Snapshot) {
 fn print_links(links: &[String], indentation: &str) {
     for link in links {
         println!("{indentation}{link}");
+    }
+}
+
+fn print_completion_note(note: Option<&str>, indentation: &str) {
+    if let Some(note) = note {
+        println!("{indentation}note: {note}");
     }
 }

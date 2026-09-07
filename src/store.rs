@@ -259,6 +259,7 @@ impl Store {
 
     pub async fn snapshot(&self, path: &str, include_completed: bool) -> Result<Snapshot> {
         let normalized_path = normalize_path(path);
+        let include_completed = include_completed || is_finished_archive(&normalized_path);
         let directory_id = self.directory_id(&normalized_path).await?;
         if normalized_path != "/" && directory_id.is_none() {
             bail!("directory {normalized_path} does not exist");
@@ -447,7 +448,7 @@ impl Store {
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
                       ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
                    ) AS effective_deadline,
-                   t.status, t.links
+                   t.status, t.completion_note, t.links
             FROM tasks t
             LEFT JOIN task_groups g ON g.id = t.group_id
             WHERE t.id = $1
@@ -518,7 +519,7 @@ impl Store {
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
                       ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
                    ) AS effective_deadline,
-                   t.status, t.links
+                   t.status, t.completion_note, t.links
             FROM tasks t
             LEFT JOIN task_groups g ON g.id = t.group_id
             WHERE t.directory_id = $1 AND ($2 OR t.status = 'open')
@@ -540,6 +541,12 @@ pub fn normalize_path(path: &str) -> String {
     } else {
         format!("/{}", components.join("/"))
     }
+}
+
+pub fn is_finished_archive(path: &str) -> bool {
+    path_components(path)
+        .iter()
+        .any(|component| component.eq_ignore_ascii_case("finished"))
 }
 
 fn path_components(path: &str) -> Vec<String> {
@@ -571,5 +578,12 @@ mod tests {
     fn joins_root_and_nested_paths() {
         assert_eq!(join_path("/", "projects"), "/projects");
         assert_eq!(join_path("/projects", "example"), "/projects/example");
+    }
+
+    #[test]
+    fn recognizes_finished_archive_paths() {
+        assert!(is_finished_archive("/projects/oxia/finished"));
+        assert!(is_finished_archive("/projects/finished/oxia"));
+        assert!(!is_finished_archive("/projects/unfinished"));
     }
 }
