@@ -29,11 +29,16 @@ actum
 
 The left pane remains your native shell and can run any command or AI agent. The right pane reads the same PostgreSQL data used by the CLI and MCP server. Other terminal applications work too; use their normal split-pane action.
 
-Inside Actum, the top row shows directories on the left and the selected directory's task list on the right. Colored group badges make task sections easy to scan. The bottom row shows the selected task's unique ID, status, deadline, location, links, and comments or notes.
+Inside Actum, the upper tabs switch between `Today`, `Backlog`, and `Completed`, with live task counts. `Today` is the default and includes open tasks due today or overdue. `Backlog` shows all open work. `Completed` provides directory and finish-date archive views with full completion details.
+
+Below the tabs, the top row shows directories on the left and the selected directory's task list on the right. Colored group badges make task sections easy to scan. The bottom row shows the selected task's unique ID, status, deadline, location, group, completion time, links, and comments or notes.
 
 Sidebar keys:
 
 - `Tab`: switch between directories and tasks
+- `1` / `2` / `3`: open Today, Backlog, or Completed
+- `[` / `]`: switch to the previous or next tab
+- `d` / `f` in Completed: archive by directory or finish date
 - `j` / `k` or arrow keys: move
 - `Enter`: enter a directory or open the selected task's first link
 - `Backspace`, `h`, or left arrow: move to the parent directory
@@ -41,9 +46,9 @@ Sidebar keys:
 - `r`: refresh
 - `q`: quit Actum in the task pane
 
-Completed tasks are hidden by default. The sidebar also refreshes once per second after changes made by another CLI or MCP process.
+The sidebar refreshes once per second after changes made by another CLI or MCP process.
 
-Each project can keep completed work in a nested `finished/` directory. Actum recognizes that directory as an archive in the TUI, CLI, and MCP server: completed tasks appear automatically with their original groups, stable IDs, links, deadlines, and completion notes.
+Each project can keep completed work in a nested `finished/` directory. Actum recognizes that directory as an archive in the TUI, CLI, and MCP server. The Completed tab also finds completed tasks recursively, so its directory and finish-date views include the full archive with original groups, stable IDs, links, deadlines, completion timestamps, and notes.
 
 ## CLI examples
 

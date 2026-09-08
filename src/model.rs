@@ -1,5 +1,5 @@
 use anyhow::Context;
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -9,6 +9,14 @@ pub struct DirectoryView {
     pub path: String,
     pub explicit_deadline: Option<NaiveDate>,
     pub effective_deadline: Option<NaiveDate>,
+    pub completed_task_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, sqlx::FromRow)]
+pub struct TaskCounts {
+    pub today: i64,
+    pub backlog: i64,
+    pub completed: i64,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -24,12 +32,14 @@ pub struct GroupView {
 pub struct TaskView {
     pub id: i64,
     pub directory_id: i64,
+    pub directory_path: String,
     pub group_id: Option<i64>,
     pub group_name: Option<String>,
     pub title: String,
     pub explicit_deadline: Option<NaiveDate>,
     pub effective_deadline: Option<NaiveDate>,
     pub status: String,
+    pub completed_at: Option<DateTime<Utc>>,
     pub completion_note: Option<String>,
     pub links: Vec<String>,
 }

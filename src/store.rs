@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use chrono::NaiveDate;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
-use crate::model::{DirectoryView, GroupView, GroupWithTasks, Snapshot, TaskView};
+use crate::model::{DirectoryView, GroupView, GroupWithTasks, Snapshot, TaskCounts, TaskView};
 
 #[derive(Clone)]
 pub struct Store {
@@ -15,6 +15,7 @@ struct DirectoryRow {
     name: String,
     explicit_deadline: Option<NaiveDate>,
     effective_deadline: Option<NaiveDate>,
+    completed_task_count: i64,
 }
 
 impl Store {
@@ -270,7 +271,8 @@ impl Store {
             SELECT child.id,
                    child.name,
                    child.deadline AS explicit_deadline,
-                   COALESCE(task_rollup.deadline, inherited.deadline) AS effective_deadline
+                   COALESCE(task_rollup.deadline, inherited.deadline) AS effective_deadline,
+                   task_rollup.completed_task_count
             FROM directories child
             LEFT JOIN LATERAL (
                 WITH RECURSIVE ancestry AS (
@@ -310,11 +312,11 @@ impl Store {
                     WHERE deadline IS NOT NULL
                     ORDER BY depth
                     LIMIT 1)
-                )) AS deadline
+                )) FILTER (WHERE task.status = 'open') AS deadline,
+                COUNT(*) FILTER (WHERE task.status = 'completed') AS completed_task_count
                 FROM descendants
                 JOIN tasks task ON task.directory_id = descendants.id
                 LEFT JOIN task_groups task_group ON task_group.id = task.group_id
-                WHERE task.status = 'open'
             ) task_rollup ON true
             WHERE child.parent_id IS NOT DISTINCT FROM $1
             ORDER BY effective_deadline NULLS LAST, child.name
@@ -332,6 +334,7 @@ impl Store {
                 name: row.name,
                 explicit_deadline: row.explicit_deadline,
                 effective_deadline: row.effective_deadline,
+                completed_task_count: row.completed_task_count,
             })
             .collect();
 
@@ -372,6 +375,121 @@ impl Store {
             groups,
             ungrouped_tasks,
         })
+    }
+
+    pub async fn task_counts(&self, path: &str, today: NaiveDate) -> Result<TaskCounts> {
+        let normalized_path = normalize_path(path);
+        let directory_id = self.directory_id(&normalized_path).await?;
+        if normalized_path != "/" && directory_id.is_none() {
+            bail!("directory {normalized_path} does not exist");
+        }
+
+        sqlx::query_as(
+            r#"
+            WITH RECURSIVE descendants AS (
+                SELECT id
+                FROM directories
+                WHERE CASE
+                    WHEN $1::BIGINT IS NULL THEN parent_id IS NULL
+                    ELSE id = $1
+                END
+                UNION ALL
+                SELECT child.id
+                FROM directories child
+                JOIN descendants ON child.parent_id = descendants.id
+            ), resolved_tasks AS (
+                SELECT task.status,
+                       COALESCE(task.deadline, task_group.deadline, inherited.deadline)
+                           AS effective_deadline
+                FROM descendants
+                JOIN tasks task ON task.directory_id = descendants.id
+                LEFT JOIN task_groups task_group ON task_group.id = task.group_id
+                LEFT JOIN LATERAL (
+                    WITH RECURSIVE ancestry AS (
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
+                        FROM directories d WHERE d.id = task.directory_id
+                        UNION ALL
+                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
+                        FROM directories parent
+                        JOIN ancestry ON parent.id = ancestry.parent_id
+                    )
+                    SELECT deadline
+                    FROM ancestry
+                    WHERE deadline IS NOT NULL
+                    ORDER BY depth
+                    LIMIT 1
+                ) inherited ON true
+            )
+            SELECT COUNT(*) FILTER (
+                       WHERE status = 'open' AND effective_deadline <= $2
+                   ) AS today,
+                   COUNT(*) FILTER (WHERE status = 'open') AS backlog,
+                   COUNT(*) FILTER (WHERE status = 'completed') AS completed
+            FROM resolved_tasks
+            "#,
+        )
+        .bind(directory_id)
+        .bind(today)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn completed_tasks(&self, path: &str) -> Result<Vec<TaskView>> {
+        let normalized_path = normalize_path(path);
+        let directory_id = self.directory_id(&normalized_path).await?;
+        if normalized_path != "/" && directory_id.is_none() {
+            bail!("directory {normalized_path} does not exist");
+        }
+
+        sqlx::query_as(
+            r#"
+            WITH RECURSIVE descendants AS (
+                SELECT id
+                FROM directories
+                WHERE CASE
+                    WHEN $1::BIGINT IS NULL THEN parent_id IS NULL
+                    ELSE id = $1
+                END
+                UNION ALL
+                SELECT child.id
+                FROM directories child
+                JOIN descendants ON child.parent_id = descendants.id
+            )
+            SELECT t.id, t.directory_id,
+                   (WITH RECURSIVE path AS (
+                      SELECT d.id, d.parent_id, d.name, 0 AS depth
+                      FROM directories d WHERE d.id = t.directory_id
+                      UNION ALL
+                      SELECT parent.id, parent.parent_id, parent.name, path.depth + 1
+                      FROM directories parent JOIN path ON parent.id = path.parent_id
+                    ) SELECT '/' || string_agg(name, '/' ORDER BY depth DESC) FROM path)
+                      AS directory_path,
+                   t.group_id, g.name AS group_name, t.title,
+                   t.deadline AS explicit_deadline,
+                   COALESCE(
+                     t.deadline,
+                     g.deadline,
+                     (WITH RECURSIVE ancestry AS (
+                        SELECT d.id, d.parent_id, d.deadline, 0 AS depth
+                        FROM directories d WHERE d.id = t.directory_id
+                        UNION ALL
+                        SELECT parent.id, parent.parent_id, parent.deadline, ancestry.depth + 1
+                        FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
+                      ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
+                   ) AS effective_deadline,
+                   t.status, t.completed_at, t.completion_note, t.links
+            FROM descendants
+            JOIN tasks t ON t.directory_id = descendants.id
+            LEFT JOIN task_groups g ON g.id = t.group_id
+            WHERE t.status = 'completed'
+            ORDER BY t.completed_at DESC NULLS LAST, t.id DESC
+            "#,
+        )
+        .bind(directory_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
     }
 
     pub async fn initialize(&self) -> Result<()> {
@@ -435,7 +553,16 @@ impl Store {
     async fn task_by_id(&self, task_id: i64) -> Result<TaskView> {
         sqlx::query_as(
             r#"
-            SELECT t.id, t.directory_id, t.group_id, g.name AS group_name, t.title,
+            SELECT t.id, t.directory_id,
+                   (WITH RECURSIVE path AS (
+                      SELECT d.id, d.parent_id, d.name, 0 AS depth
+                      FROM directories d WHERE d.id = t.directory_id
+                      UNION ALL
+                      SELECT parent.id, parent.parent_id, parent.name, path.depth + 1
+                      FROM directories parent JOIN path ON parent.id = path.parent_id
+                    ) SELECT '/' || string_agg(name, '/' ORDER BY depth DESC) FROM path)
+                      AS directory_path,
+                   t.group_id, g.name AS group_name, t.title,
                    t.deadline AS explicit_deadline,
                    COALESCE(
                      t.deadline,
@@ -448,7 +575,7 @@ impl Store {
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
                       ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
                    ) AS effective_deadline,
-                   t.status, t.completion_note, t.links
+                   t.status, t.completed_at, t.completion_note, t.links
             FROM tasks t
             LEFT JOIN task_groups g ON g.id = t.group_id
             WHERE t.id = $1
@@ -506,7 +633,16 @@ impl Store {
     ) -> Result<Vec<TaskView>> {
         sqlx::query_as(
             r#"
-            SELECT t.id, t.directory_id, t.group_id, g.name AS group_name, t.title,
+            SELECT t.id, t.directory_id,
+                   (WITH RECURSIVE path AS (
+                      SELECT d.id, d.parent_id, d.name, 0 AS depth
+                      FROM directories d WHERE d.id = t.directory_id
+                      UNION ALL
+                      SELECT parent.id, parent.parent_id, parent.name, path.depth + 1
+                      FROM directories parent JOIN path ON parent.id = path.parent_id
+                    ) SELECT '/' || string_agg(name, '/' ORDER BY depth DESC) FROM path)
+                      AS directory_path,
+                   t.group_id, g.name AS group_name, t.title,
                    t.deadline AS explicit_deadline,
                    COALESCE(
                      t.deadline,
@@ -519,7 +655,7 @@ impl Store {
                         FROM directories parent JOIN ancestry ON parent.id = ancestry.parent_id
                       ) SELECT deadline FROM ancestry WHERE deadline IS NOT NULL ORDER BY depth LIMIT 1)
                    ) AS effective_deadline,
-                   t.status, t.completion_note, t.links
+                   t.status, t.completed_at, t.completion_note, t.links
             FROM tasks t
             LEFT JOIN task_groups g ON g.id = t.group_id
             WHERE t.directory_id = $1 AND ($2 OR t.status = 'open')
